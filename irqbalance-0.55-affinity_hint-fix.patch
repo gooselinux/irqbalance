@@ -1,0 +1,77 @@
+diff -up ./irqbalance-0.55/bitmap.c.orig ./irqbalance-0.55/bitmap.c
+--- ./irqbalance-0.55/bitmap.c.orig	2010-08-09 15:04:23.000000000 -0400
++++ ./irqbalance-0.55/bitmap.c	2010-08-09 15:16:36.000000000 -0400
+@@ -74,6 +74,19 @@ int __bitmap_full(const unsigned long *b
+ 	return 1;
+ }
+ 
++int __bitmap_weight(const unsigned long *bitmap, int bits)
++{
++	int k, w = 0, lim = bits/BITS_PER_LONG;
++
++	for (k = 0; k < lim; k++)
++		w += hweight_long(bitmap[k]);
++
++	if (bits % BITS_PER_LONG)
++		w += hweight_long(bitmap[k] & BITMAP_LAST_WORD_MASK(bits));
++
++	return w;
++}
++
+ int __bitmap_equal(const unsigned long *bitmap1,
+ 		const unsigned long *bitmap2, int bits)
+ {
+diff -up ./irqbalance-0.55/cputree.c.orig ./irqbalance-0.55/cputree.c
+--- ./irqbalance-0.55/cputree.c.orig	2010-08-09 15:01:08.000000000 -0400
++++ ./irqbalance-0.55/cputree.c	2010-08-09 15:02:05.000000000 -0400
+@@ -49,6 +49,7 @@ int core_count;
+ /* Users want to be able to keep interrupts away from some cpus; store these in a cpumask_t */
+ cpumask_t banned_cpus;
+ 
++cpumask_t cpu_present_map;
+ 
+ /* 
+    it's convenient to have the complement of banned_cpus available so that 
+@@ -156,6 +157,8 @@ static void do_one_cpu(int dfd, char *d_
+ 		return;
+ 
+ 	cpu->number = strtoul(&d_name[3], NULL, 10);
++
++	cpu_set(cpu->number, cpu_present_map);
+ 	
+ 	cpu_set(cpu->number, cpu->mask);
+ 
+diff -up ./irqbalance-0.55/irqlist.c.orig ./irqbalance-0.55/irqlist.c
+--- ./irqbalance-0.55/irqlist.c.orig	2010-08-09 14:35:30.000000000 -0400
++++ ./irqbalance-0.55/irqlist.c	2010-08-09 15:02:29.000000000 -0400
+@@ -39,6 +39,7 @@ GList *interrupts;
+ void get_affinity_hint(struct interrupt *irq, int number)
+ {
+ 	char buf[PATH_MAX];
++	cpumask_t tempmask;
+ 	char *line = NULL;
+ 	size_t size = 0;
+ 	FILE *file;
+@@ -51,7 +52,9 @@ void get_affinity_hint(struct interrupt 
+ 		fclose(file);
+ 		return;
+ 	}
+-	cpumask_parse_user(line, strlen(line), irq->node_mask);
++	cpumask_parse_user(line, strlen(line), tempmask);
++	if (!__cpus_full(&tempmask, num_present_cpus()))
++		irq->node_mask = tempmask;
+ 	fclose(file);
+ 	free(line);
+ }
+diff -up ./irqbalance-0.55/placement.c.orig ./irqbalance-0.55/placement.c
+--- ./irqbalance-0.55/placement.c.orig	2010-08-09 14:44:57.000000000 -0400
++++ ./irqbalance-0.55/placement.c	2010-08-09 15:02:40.000000000 -0400
+@@ -262,7 +262,7 @@ static void place_affinity_hint(GList *l
+ 		}
+ 		if ((!cpus_empty(irq->node_mask)) &&
+ 		    (!cpus_equal(irq->mask, irq->node_mask)) &&
+-		    (!cpus_full(irq->node_mask))) {
++		    (!__cpus_full(&irq->node_mask, num_present_cpus()))) {
+ 			irq->old_mask = irq->mask;
+ 			irq->mask = irq->node_mask;
+ 		}

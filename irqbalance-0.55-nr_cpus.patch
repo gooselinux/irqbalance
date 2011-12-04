@@ -1,0 +1,12 @@
+diff -up irqbalance-0.55/irqbalance-0.55/cpumask.h.orig irqbalance-0.55/irqbalance-0.55/cpumask.h
+--- irqbalance-0.55/irqbalance-0.55/cpumask.h.orig	2006-11-23 06:02:08.000000000 -0500
++++ irqbalance-0.55/irqbalance-0.55/cpumask.h	2010-08-02 13:54:46.000000000 -0400
+@@ -1,7 +1,7 @@
+ #ifndef __LINUX_CPUMASK_H
+ #define __LINUX_CPUMASK_H
+ 
+-#define NR_CPUS 256
++#define NR_CPUS 4096 
+ /*
+  * Cpumasks provide a bitmap suitable for representing the
+  * set of CPU's in a system, one bit position per CPU number.

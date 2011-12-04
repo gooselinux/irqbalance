@@ -1,0 +1,146 @@
+diff -up irqbalance-0.55/irqbalance-0.55/irqbalance.c.orig irqbalance-0.55/irqbalance-0.55/irqbalance.c
+--- irqbalance-0.55/irqbalance-0.55/irqbalance.c.orig	2010-08-02 13:55:09.000000000 -0400
++++ irqbalance-0.55/irqbalance-0.55/irqbalance.c	2010-08-02 13:55:57.000000000 -0400
+@@ -87,7 +87,6 @@ int main(int argc, char** argv)
+ 	if (cache_domain_count==1)
+ 		one_shot_mode = 1;
+ 
+-
+ 	if (!debug_mode)
+ 		if (daemon(0,0))
+ 			exit(EXIT_FAILURE);
+diff -up irqbalance-0.55/irqbalance-0.55/irqlist.c.orig irqbalance-0.55/irqbalance-0.55/irqlist.c
+--- irqbalance-0.55/irqbalance-0.55/irqlist.c.orig	2010-08-02 13:55:09.000000000 -0400
++++ irqbalance-0.55/irqbalance-0.55/irqlist.c	2010-08-02 13:56:00.000000000 -0400
+@@ -36,6 +36,26 @@ GList *interrupts;
+ 
+ 
+ 
++void get_affinity_hint(struct interrupt *irq, int number)
++{
++	char buf[PATH_MAX];
++	char *line = NULL;
++	size_t size = 0;
++	FILE *file;
++	sprintf(buf, "/proc/irq/%i/affinity_hint", number);
++	file = fopen(buf, "r");
++	if (!file)
++		return;
++	if (getline(&line, &size, file)==0) {
++		free(line);
++		fclose(file);
++		return;
++	}
++	cpumask_parse_user(line, strlen(line), irq->node_mask);
++	fclose(file);
++	free(line);
++}
++
+ /*
+  * This function classifies and reads various things from /proc about a specific irq 
+  */
+@@ -68,6 +88,8 @@ static void investigate(struct interrupt
+ 			cpumask_parse_user(line, strlen(line), irq->mask);
+ 			fclose(file);
+ 			free(line);
++		} else if (strcmp(entry->d_name,"affinity_hint")==0) {
++			get_affinity_hint(irq, number);
+ 		} else {
+ 			irq->class = find_class(irq, entry->d_name);
+ 		}
+@@ -109,6 +131,8 @@ void set_interrupt_count(int number, uin
+ 
+ 		if (irq->number == number) {
+ 			irq->count = count;
++			/* see if affinity_hint changed */
++			get_affinity_hint(irq, number);
+ 			return;
+ 		}
+ 		item = g_list_next(item);
+diff -up irqbalance-0.55/irqbalance-0.55/placement.c.orig irqbalance-0.55/irqbalance-0.55/placement.c
+--- irqbalance-0.55/irqbalance-0.55/placement.c.orig	2010-08-02 13:55:09.000000000 -0400
++++ irqbalance-0.55/irqbalance-0.55/placement.c	2010-08-02 13:56:03.000000000 -0400
+@@ -247,6 +247,30 @@ static void place_packages(GList *list)
+ }
+ 
+ 
++static void place_affinity_hint(GList *list)
++{
++	/* still need to balance best workload within the affinity_hint mask */
++	GList *iter;
++	struct interrupt *irq;
++
++	iter = g_list_first(list);
++	while (iter) {
++		irq = iter->data;
++		if (irq->balance_level == BALANCE_NONE) {
++			iter = g_list_next(iter);
++			continue;
++		}
++		if ((!cpus_empty(irq->node_mask)) &&
++		    (!cpus_equal(irq->mask, irq->node_mask)) &&
++		    (!cpus_full(irq->node_mask))) {
++			irq->old_mask = irq->mask;
++			irq->mask = irq->node_mask;
++		}
++
++		iter = g_list_next(iter);
++	}
++}
++
+ 
+ static void do_unroutables(void)
+ {
+@@ -266,7 +290,8 @@ static void do_unroutables(void)
+ 		iter = g_list_first(packages);
+ 		while (iter) {
+ 			package = iter->data;
+-			if (cpus_intersects(package->mask, irq->mask))
++			if (cpus_intersects(package->mask, irq->node_mask) ||
++			    cpus_intersects(package->mask, irq->mask))
+ 				package->workload += irq->workload;
+ 			iter = g_list_next(iter);
+ 		}
+@@ -274,14 +299,16 @@ static void do_unroutables(void)
+ 		iter = g_list_first(cache_domains);
+ 		while (iter) {
+ 			cache_domain = iter->data;
+-			if (cpus_intersects(cache_domain->mask, irq->mask))
++			if (cpus_intersects(cache_domain->mask, irq->node_mask)
++			    || cpus_intersects(cache_domain->mask, irq->mask))
+ 				cache_domain->workload += irq->workload;
+ 			iter = g_list_next(iter);
+ 		}
+ 		iter = g_list_first(cpus);
+ 		while (iter) {
+ 			cpu = iter->data;
+-			if (cpus_intersects(cpu->mask, irq->mask))
++			if (cpus_intersects(cpu->mask, irq->node_mask) ||
++			    cpus_intersects(cpu->mask, irq->mask))
+ 				cpu->workload += irq->workload;
+ 			iter = g_list_next(iter);
+ 		}
+@@ -313,4 +340,10 @@ void calculate_placement(void)
+ 		place_core(cache_domain);
+ 		iter = g_list_next(iter);
+ 	}
++	/*
++	 * if affinity_hint is populated on irq and is not set to
++	 * all CPUs (meaning it's initialized), honor that above
++	 * anything in the package locality/workload.
++	 */
++	place_affinity_hint(interrupts);
+ }
+diff -up irqbalance-0.55/irqbalance-0.55/types.h.orig irqbalance-0.55/irqbalance-0.55/types.h
+--- irqbalance-0.55/irqbalance-0.55/types.h.orig	2006-11-24 11:11:02.000000000 -0500
++++ irqbalance-0.55/irqbalance-0.55/types.h	2010-08-02 13:56:05.000000000 -0400
+@@ -78,6 +78,9 @@ struct interrupt {
+ 	
+ 
+ 	cpumask_t	numa_mask;
++
++	/* user/driver provided for smarter balancing */
++	cpumask_t       node_mask;
+ };
+ 
+ 
